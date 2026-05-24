@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Minecraft</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            overflow: hidden;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+            cursor: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="game"></canvas>
+
+    <script>
+        // ============================================================
+        // FULL MINI MINECRAFT-LIKE GAME IN JAVASCRIPT
+        // Features:
+        // - 3D voxel rendering
+        // - Mouse look
+        // - Gravity + jumping
+        // - Block breaking
+        // - Block placing
+        // - Terrain generation
+        // - Distance shading
+        // - Cube faces
+        // - First person movement
+        // ============================================================
+
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+
+        const WIDTH = 1000;
+        const HEIGHT = 700;
+
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        const WORLD_SIZE = 32;
+
+        // 3D world array: world[x][y][z]
+        const world = new Array(WORLD_SIZE);
+        for (let x = 0; x < WORLD_SIZE; x++) {
+            world[x] = new Array(WORLD_SIZE);
+            for (let y = 0; y < WORLD_SIZE; y++) {
+                world[x][y] = new Array(WORLD_SIZE).fill(0);
+            }
+        }
+
+        // Player state
+        let playerX = 16;
+        let playerY = 8;
+        let playerZ = 16;
+
+        let velocityY = 0;
+
+        let yaw = 0;
+
+        let forward = false;
+        let backward = false;
+        let left = false;
+        let right = false;
+        let jump = false;
+
+        let onGround = false;
+
+        let lastMouseX = -1;
+
+        // ============================================================
+        // World Generation
+        // ============================================================
+
+        function generateWorld() {
+            for (let x = 0; x < WORLD_SIZE; x++) {
+                for (let z = 0; z < WORLD_SIZE; z++) {
+                    const height = Math.floor(
+                        Math.sin(x * 0.4) * 2 +
+                        Math.cos(z * 0.4) * 2 + 6
+                    );
+
+                    for (let y = 0; y < height; y++) {
+                        world[x][y][z] = 1;
+                    }
+                }
+            }
+
+            // Tree trunk
+            for (let y = 6; y < 10; y++) {
+                world[10][y][10] = 2;
+            }
+
+            // Tree leaves
+            for (let x = 8; x <= 12; x++) {
+                for (let y = 10; y <= 12; y++) {
+                    for (let z = 8; z <= 12; z++) {
+                        world[x][y][z] = 3;
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // Block Class
+        // ============================================================
+
+        class Block {
+            constructor(x, y, z, type, distance) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+                this.type = type;
+                this.distance = distance;
+            }
+        }
+
+        // ============================================================
+        // Rendering
+        // ============================================================
+
+        function render() {
+            ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+            // Sky
+            ctx.fillStyle = 'rgb(100, 180, 255)';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            const blocks = [];
+
+            // Optimization: Only add blocks that are roughly in the player's view
+            const cosYaw = Math.cos(yaw);
+            const sinYaw = Math.sin(yaw);
+
+            for (let x = 0; x < WORLD_SIZE; x++) {
+                for (let y = 0; y < WORLD_SIZE; y++) {
+                    for (let z = 0; z < WORLD_SIZE; z++) {
+                        if (world[x][y][z] !== 0) {
+                            const dx = x - playerX;
+                            const dz = z - playerZ;
+
+                            // Quick frustum check: is it behind us?
+                            const rz = dx * sinYaw + dz * cosYaw;
+                            if (rz < -1) continue;
+
+                            const dy = y - playerY;
+                            const dist = dx * dx + dy * dy + dz * dz;
+
+                            blocks.push(
+                                new Block(
+                                    x,
+                                    y,
+                                    z,
+                                    world[x][y][z],
+                                    dist
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Draw farthest first (painter's algorithm)
+            blocks.sort((a, b) => b.distance - a.distance);
+
+            for (const b of blocks) {
+                renderCube(
+                    b.x,
+                    b.y,
+                    b.z,
+                    b.type
+                );
+            }
+
+            // Crosshair
+            ctx.strokeStyle = 'black';
+
+            ctx.beginPath();
+            ctx.moveTo(WIDTH / 2 - 10, HEIGHT / 2);
+            ctx.lineTo(WIDTH / 2 + 10, HEIGHT / 2);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(WIDTH / 2, HEIGHT / 2 - 10);
+            ctx.lineTo(WIDTH / 2, HEIGHT / 2 + 10);
+            ctx.stroke();
+        }
+
+        function renderCube(bx, by, bz, type) {
+            // 8 cube vertices
+            const points = [
+                [bx, by, bz],
+                [bx + 1, by, bz],
+                [bx + 1, by + 1, bz],
+                [bx, by + 1, bz],
+
+                [bx, by, bz + 1],
+                [bx + 1, by, bz + 1],
+                [bx + 1, by + 1, bz + 1],
+                [bx, by + 1, bz + 1]
+            ];
+
+            const projected = new Array(8);
+
+            for (let i = 0; i < 8; i++) {
+                const dx = points[i][0] - playerX;
+                const dy = points[i][1] - playerY;
+                const dz = points[i][2] - playerZ;
+
+                const rx =
+                    dx * Math.cos(yaw) -
+                    dz * Math.sin(yaw);
+
+                const rz =
+                    dx * Math.sin(yaw) +
+                    dz * Math.cos(yaw);
+
+                // Prevent division by zero and extreme warping
+                const clampedRz = rz < 0.1 ? 0.1 : rz;
+
+                const scale = 300 / clampedRz;
+
+                const sx = Math.floor(WIDTH / 2 + rx * scale);
+                const sy = Math.floor(HEIGHT / 2 - dy * scale);
+
+                projected[i] = [sx, sy];
+            }
+
+            // Depth Shading based on distance
+            const dist = Math.sqrt(
+                Math.pow(bx - playerX, 2) +
+                Math.pow(by - playerY, 2) +
+                Math.pow(bz - playerZ, 2)
+            );
+            const shadow = Math.max(0.2, Math.min(1.0, 1.0 - (dist / WORLD_SIZE)));
+
+            let base;
+
+            switch (type) {
+                case 1:
+                    base = [50, 200, 50];
+                    break;
+                case 2:
+                    base = [120, 70, 20];
+                    break;
+                default:
+                    base = [30, 150, 30];
+            }
+
+            // Helper to apply shadow
+            function shadedColor(r, g, b) {
+                const sr = Math.floor(r * shadow);
+                const sg = Math.floor(g * shadow);
+                const sb = Math.floor(b * shadow);
+                return `rgb(${sr}, ${sg}, ${sb})`;
+            }
+
+            // Helper to brighten/darken
+            function brighterColor(r, g, b, amount) {
+                const br = Math.min(255, Math.floor(r * (1 + amount) * shadow));
+                const bg = Math.min(255, Math.floor(g * (1 + amount) * shadow));
+                const bb = Math.min(255, Math.floor(b * (1 + amount) * shadow));
+                return `rgb(${br}, ${bg}, ${bb})`;
+            }
+
+            function darkerColor(r, g, b, amount) {
+                const dr = Math.max(0, Math.floor(r * (1 - amount) * shadow));
+                const dg = Math.max(0, Math.floor(g * (1 - amount) * shadow));
+                const db = Math.max(0, Math.floor(b * (1 - amount) * shadow));
+                return `rgb(${dr}, ${dg}, ${db})`;
+            }
+
+            // FRONT FACE
+            const front = projected[4].concat(projected[5], projected[6], projected[7]);
+
+            ctx.fillStyle = shadedColor(...base);
+            ctx.beginPath();
+            ctx.moveTo(front[0], front[1]);
+            ctx.lineTo(front[2], front[3]);
+            ctx.lineTo(front[4], front[5]);
+            ctx.lineTo(front[6], front[7]);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'black';
+            ctx.stroke();
+
+            // TOP FACE
+            const top = projected[3].concat(projected[2], projected[6], projected[7]);
+
+            ctx.fillStyle = brighterColor(...base, 0.2);
+            ctx.beginPath();
+            ctx.moveTo(top[0], top[1]);
+            ctx.lineTo(top[2], top[3]);
+            ctx.lineTo(top[4], top[5]);
+            ctx.lineTo(top[6], top[7]);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'black';
+            ctx.stroke();
+
+            // SIDE FACE
+            const side = projected[1].concat(projected[5], projected[6], projected[2]);
+
+            ctx.fillStyle = darkerColor(...base, 0.2);
+            ctx.beginPath();
+            ctx.moveTo(side[0], side[1]);
+            ctx.lineTo(side[2], side[3]);
+            ctx.lineTo(side[4], side[5]);
+            ctx.lineTo(side[6], side[7]);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'black';
+            ctx.stroke();
+        }
+
+        // ============================================================
+        // Game Loop (actionPerformed equivalent)
+        // ============================================================
+
+        function update() {
+            const speed = 0.15;
+
+            if (forward) {
+                playerX += Math.sin(yaw) * speed;
+                playerZ += Math.cos(yaw) * speed;
+            }
+
+            if (backward) {
+                playerX -= Math.sin(yaw) * speed;
+                playerZ -= Math.cos(yaw) * speed;
+            }
+
+            if (left) {
+                playerX += Math.sin(yaw - Math.PI / 2) * speed;
+                playerZ += Math.cos(yaw - Math.PI / 2) * speed;
+            }
+
+            if (right) {
+                playerX += Math.sin(yaw + Math.PI / 2) * speed;
+                playerZ += Math.cos(yaw + Math.PI / 2) * speed;
+            }
+
+            // Gravity
+            velocityY -= 0.01;
+            playerY += velocityY;
+
+            // Ground collision
+            if (playerY < 8) {
+                playerY = 8;
+                velocityY = 0;
+                onGround = true;
+            } else {
+                onGround = false;
+            }
+
+            // Jump
+            if (jump && onGround) {
+                velocityY = 0.25;
+            }
+
+            render();
+        }
+
+        // ============================================================
+        // Block Breaking
+        // ============================================================
+
+        function breakBlock() {
+            const reach = 5;
+
+            for (let d = 0; d < reach; d += 0.1) {
+                const tx = Math.floor(
+                    playerX + Math.sin(yaw) * d
+                );
+
+                const ty = Math.floor(playerY);
+
+                const tz = Math.floor(
+                    playerZ + Math.cos(yaw) * d
+                );
+
+                if (
+                    tx >= 0 &&
+                    ty >= 0 &&
+                    tz >= 0 &&
+                    tx < WORLD_SIZE &&
+                    ty < WORLD_SIZE &&
+                    tz < WORLD_SIZE
+                ) {
+                    if (world[tx][ty][tz] !== 0) {
+                        world[tx][ty][tz] = 0;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // Block Placing
+        // ============================================================
+
+        function placeBlock() {
+            const reach = 5;
+
+            for (let d = 0; d < reach; d += 0.1) {
+                const tx = Math.floor(
+                    playerX + Math.sin(yaw) * d
+                );
+
+                const ty = Math.floor(playerY);
+
+                const tz = Math.floor(
+                    playerZ + Math.cos(yaw) * d
+                );
+
+                if (
+                    tx >= 0 &&
+                    ty >= 0 &&
+                    tz >= 0 &&
+                    tx < WORLD_SIZE &&
+                    ty < WORLD_SIZE &&
+                    tz < WORLD_SIZE
+                ) {
+                    if (world[tx][ty][tz] !== 0) {
+                        const px = Math.floor(
+                            playerX + Math.sin(yaw) * (d - 0.1)
+                        );
+
+                        const py = ty;
+
+                        const pz = Math.floor(
+                            playerZ + Math.cos(yaw) * (d - 0.1)
+                        );
+
+                        world[px][py][pz] = 1;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // Input Handling
+        // ============================================================
+
+        // Key Events
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyW')
+                forward = true;
+
+            if (e.code === 'KeyS')
+                backward = true;
+
+            if (e.code === 'KeyA')
+                left = true;
+
+            if (e.code === 'KeyD')
+                right = true;
+
+            if (e.code === 'Space') {
+                e.preventDefault();
+                jump = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyW')
+                forward = false;
+
+            if (e.code === 'KeyS')
+                backward = false;
+
+            if (e.code === 'KeyA')
+                left = false;
+
+            if (e.code === 'KeyD')
+                right = false;
+
+            if (e.code === 'Space')
+                jump = false;
+        });
+
+        // Mouse Events
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                // Left click - break block
+                breakBlock();
+            }
+
+            if (e.button === 2) {
+                // Right click - place block
+                placeBlock();
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (lastMouseX !== -1) {
+                const dx = e.offsetX - lastMouseX;
+                yaw += dx * 0.005;
+            }
+
+            lastMouseX = e.offsetX;
+        });
+
+        // Prevent context menu on right-click
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        // ============================================================
+        // Start Game
+        // ============================================================
+
+        generateWorld();
+
+        // Center the mouse pointer on the canvas
+        canvas.addEventListener('click', () => {
+            canvas.requestPointerLock();
+        });
+
+        // Pointer lock mouse movement
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement === canvas) {
+                if (lastMouseX !== -1) {
+                    const dx = e.movementX;
+                    yaw += dx * 0.005;
+                }
+                lastMouseX = e.screenX;
+            }
+        });
+
+        // Game loop using requestAnimationFrame (equivalent to Timer)
+        function gameLoop() {
+            update();
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
